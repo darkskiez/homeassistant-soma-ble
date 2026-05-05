@@ -16,6 +16,7 @@ from bleak.exc import BleakError
 
 from homeassistant.components.bluetooth import (
     async_register_callback,
+    BluetoothChange,
     BluetoothScanningMode,
     BluetoothServiceInfoBleak,
 )
@@ -52,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     @callback
     def _advertisement_callback(
         service_info: BluetoothServiceInfoBleak,
+        change: BluetoothChange,
     ) -> None:
         """Process a BLE advertisement from this blind."""
         if MANUFACTURER_ID not in service_info.manufacturer_data:
