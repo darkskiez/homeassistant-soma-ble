@@ -34,4 +34,4 @@ AVAILABILITY_TIMEOUT = 900  # 15 minutes
 
 # Manufacturer info
 MANUFACTURER = "SOMA"
-MODEL = "Smart Shade 2.0"
+MODEL = "Smart Shade/Tilt"
