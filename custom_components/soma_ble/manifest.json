@@ -1,0 +1,16 @@
+{
+  "domain": "soma_ble",
+  "name": "SOMA BLE Blinds",
+  "bluetooth": [
+    {
+      "manufacturer_id": 880
+    }
+  ],
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["bluetooth"],
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "0.2.0"
+}

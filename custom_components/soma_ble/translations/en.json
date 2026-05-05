@@ -1,0 +1,32 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Discovered SOMA Blinds",
+        "description": "Select a discovered SOMA blind to set up, or add manually.",
+        "data": {
+          "address": "Blind"
+        }
+      },
+      "manual": {
+        "title": "Manual Entry",
+        "description": "Enter the MAC address of your SOMA blind.",
+        "data": {
+          "address": "MAC Address"
+        }
+      },
+      "confirm": {
+        "title": "Confirm Setup",
+        "description": "Do you want to set up {name} ({address})?"
+      }
+    },
+    "error": {
+      "invalid_mac": "Enter a valid MAC address (e.g. AA:BB:CC:DD:EE:FF)."
+    },
+    "abort": {
+      "already_configured": "This blind is already configured.",
+      "no_devices_found": "No SOMA blinds discovered nearby."
+    }
+  }
+}
