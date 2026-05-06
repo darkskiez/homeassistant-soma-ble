@@ -31,6 +31,7 @@ from .const import (
     CMD_STOP,
     CMD_UP,
     CONFIG_ITEM_LOCAL_TIME_OFFSET,
+    CONFIG_ITEM_MOTOR_SPEED,
     CONFIG_QUERY_PREFIX,
     CONNECT_TIMEOUT,
     DOMAIN,
@@ -112,6 +113,7 @@ class SomaBlindDevice:
         self._battery: int | None = None
         self._device_time: dt | None = None
         self._local_time_offset_hours: int | None = None
+        self._motor_speed: int | None = None
         self._solar_voltage: int | None = None
         self._under_voltage: bool | None = None
         self._manufacturer_name: str | None = None
@@ -161,6 +163,11 @@ class SomaBlindDevice:
     def local_time_offset_hours(self) -> int | None:
         """Cached timezone offset in hours (e.g. -5 for UTC-5)."""
         return self._local_time_offset_hours
+
+    @property
+    def motor_speed(self) -> int | None:
+        """Cached motor speed setting (0–255)."""
+        return self._motor_speed
 
     @property
     def solar_voltage(self) -> int | None:
@@ -391,6 +398,27 @@ class SomaBlindDevice:
         data = bytes([CONFIG_ITEM_LOCAL_TIME_OFFSET, 0x01, int8_val])
         await self._ble_write(SHADE_CONFIG_CHAR_UUID, data)
         self._local_time_offset_hours = offset_hours
+        self._notify_listeners()
+
+    # --- Shade Config (Motor Speed) ---
+
+    async def read_motor_speed(self) -> int | None:
+        """Read the motor speed setting (config item 0x01, uint8)."""
+        query = bytes([CONFIG_QUERY_PREFIX, 0x01, CONFIG_ITEM_MOTOR_SPEED])
+        response = await self._ble_notify_command(SHADE_CONFIG_CHAR_UUID, query)
+        if response is None or len(response) < 3:
+            return None
+        if response[0] != CONFIG_ITEM_MOTOR_SPEED:
+            return None
+        self._motor_speed = response[2]
+        self._notify_listeners()
+        return self._motor_speed
+
+    async def set_motor_speed(self, speed: int) -> None:
+        """Set the motor speed (0–255)."""
+        data = bytes([CONFIG_ITEM_MOTOR_SPEED, 0x01, speed & 0xFF])
+        await self._ble_write(SHADE_CONFIG_CHAR_UUID, data)
+        self._motor_speed = speed
         self._notify_listeners()
 
     # --- Diagnostics (periodic polling) ---

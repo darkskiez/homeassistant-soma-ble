@@ -44,6 +44,7 @@ CMD_STEP_DOWN = bytes([0x86])
 CMD_DOWN = bytes([0x96])
 
 # Shade Config TLV item IDs
+CONFIG_ITEM_MOTOR_SPEED = 0x01
 CONFIG_ITEM_LOCAL_TIME_OFFSET = 0x06
 
 # Shade Config query prefix byte
