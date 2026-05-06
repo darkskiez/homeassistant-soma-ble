@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import struct
 import time
+from datetime import datetime as dt, timezone
 from typing import Any, Callable
 
 from bleak import BleakClient
@@ -30,6 +32,7 @@ from .const import (
     CMD_UP,
     CONNECT_TIMEOUT,
     DOMAIN,
+    LOCAL_TIME_CHAR_UUID,
     MANUFACTURER_ID,
     MOTOR_CONTROL_UUID,
     MOTOR_TARGET_STATE_UUID,
@@ -37,7 +40,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["cover", "sensor"]
+PLATFORMS = ["cover", "sensor", "datetime"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -94,6 +97,7 @@ class SomaBlindDevice:
         self._name = name or f"SOMA Blind {mac[-8:].replace(':', '').upper()}"
         self._position: int | None = None
         self._battery: int | None = None
+        self._device_time: dt | None = None
         self._last_seen: float | None = None
         self._lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
@@ -128,6 +132,11 @@ class SomaBlindDevice:
     @property
     def unique_id(self) -> str:
         return self._mac.replace(":", "").lower()
+
+    @property
+    def device_time(self) -> dt | None:
+        """Cached device local time."""
+        return self._device_time
 
     # --- Listener management ---
 
@@ -215,6 +224,16 @@ class SomaBlindDevice:
                 _LOGGER.warning("BLE write error on %s: %s", self._mac, err)
                 raise
 
+    async def _ble_read(self, char_uuid: str) -> bytearray | None:
+        """Connect and read a BLE characteristic."""
+        async with self._lock:
+            try:
+                async with BleakClient(self._mac, timeout=CONNECT_TIMEOUT) as client:
+                    return await client.read_gatt_char(char_uuid)
+            except (BleakError, TimeoutError, AttributeError) as err:
+                _LOGGER.warning("BLE read error on %s: %s", self._mac, err)
+                raise
+
     async def open(self) -> None:
         """Open the blind fully."""
         await self._ble_write(MOTOR_CONTROL_UUID, CMD_UP)
@@ -238,4 +257,28 @@ class SomaBlindDevice:
         cmd_pos = 100 - position
         await self._ble_write(MOTOR_TARGET_STATE_UUID, bytes([cmd_pos]))
         self._position = position
+        self._notify_listeners()
+
+    # --- Time ---
+
+    async def read_time(self) -> dt | None:
+        """Read the device local time via BLE."""
+        try:
+            data = await self._ble_read(LOCAL_TIME_CHAR_UUID)
+            if data and len(data) >= 4:
+                epoch = struct.unpack("<I", data)[0]
+                self._device_time = dt.fromtimestamp(epoch, tz=timezone.utc)
+                self._notify_listeners()
+                return self._device_time
+        except (BleakError, TimeoutError, AttributeError) as err:
+            _LOGGER.warning("Failed to read time from %s: %s", self._mac, err)
+        return None
+
+    async def set_time(self, target: dt) -> None:
+        """Set the device local time via BLE (requires tz-aware or assumes local)."""
+        if target.tzinfo is None:
+            target = target.astimezone()
+        epoch = int(target.timestamp())
+        await self._ble_write(LOCAL_TIME_CHAR_UUID, struct.pack("<I", epoch))
+        self._device_time = target
         self._notify_listeners()
