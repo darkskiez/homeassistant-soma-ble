@@ -34,12 +34,17 @@ from .const import (
     CONFIG_QUERY_PREFIX,
     CONNECT_TIMEOUT,
     DOMAIN,
+    HARDWARE_REVISION_UUID,
     LOCAL_TIME_CHAR_UUID,
     MANUFACTURER_ID,
+    MANUFACTURER_NAME_UUID,
     MOTOR_CONTROL_UUID,
+    MOTOR_SOLAR_PANEL_VOLTAGE_UUID,
     MOTOR_TARGET_STATE_UUID,
+    MOTOR_UNDER_VOLTAGE_UUID,
     RESPONSE_TIMEOUT,
     SHADE_CONFIG_CHAR_UUID,
+    SOFTWARE_REVISION_UUID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,6 +88,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Start periodic polling for diagnostic values (solar voltage, under voltage).
+    device.start_polling(hass, entry)
+
     return True
 
 
@@ -103,6 +112,11 @@ class SomaBlindDevice:
         self._battery: int | None = None
         self._device_time: dt | None = None
         self._local_time_offset_hours: int | None = None
+        self._solar_voltage: int | None = None
+        self._under_voltage: bool | None = None
+        self._manufacturer_name: str | None = None
+        self._hardware_revision: str | None = None
+        self._software_revision: str | None = None
         self._last_seen: float | None = None
         self._lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
@@ -147,6 +161,28 @@ class SomaBlindDevice:
     def local_time_offset_hours(self) -> int | None:
         """Cached timezone offset in hours (e.g. -5 for UTC-5)."""
         return self._local_time_offset_hours
+
+    @property
+    def solar_voltage(self) -> int | None:
+        """Cached solar panel voltage (raw uint16 from device)."""
+        return self._solar_voltage
+
+    @property
+    def under_voltage(self) -> bool | None:
+        """Cached under-voltage flag."""
+        return self._under_voltage
+
+    @property
+    def manufacturer_name(self) -> str | None:
+        return self._manufacturer_name
+
+    @property
+    def hardware_revision(self) -> str | None:
+        return self._hardware_revision
+
+    @property
+    def software_revision(self) -> str | None:
+        return self._software_revision
 
     # --- Listener management ---
 
@@ -356,3 +392,85 @@ class SomaBlindDevice:
         await self._ble_write(SHADE_CONFIG_CHAR_UUID, data)
         self._local_time_offset_hours = offset_hours
         self._notify_listeners()
+
+    # --- Diagnostics (periodic polling) ---
+
+    def start_polling(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Start a background task that periodically refreshes diagnostic values."""
+        stop_event = asyncio.Event()
+
+        async def _poll_loop() -> None:
+            while not stop_event.is_set():
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    await self._refresh_diagnostics()
+
+        task = hass.async_create_task(_poll_loop())
+
+        def _stop() -> None:
+            stop_event.set()
+            task.cancel()
+
+        entry.async_on_unload(_stop)
+
+    async def _refresh_diagnostics(self) -> None:
+        """Read solar voltage and under-voltage in a single BLE session."""
+        async with self._lock:
+            try:
+                async with BleakClient(self._mac, timeout=CONNECT_TIMEOUT) as client:
+                    try:
+                        data = await client.read_gatt_char(MOTOR_SOLAR_PANEL_VOLTAGE_UUID)
+                        if data and len(data) >= 2:
+                            self._solar_voltage = struct.unpack("<H", data)[0]
+                    except (BleakError, TimeoutError, AttributeError) as err:
+                        _LOGGER.debug("Solar voltage not available on %s: %s", self._mac, err)
+                    try:
+                        data = await client.read_gatt_char(MOTOR_UNDER_VOLTAGE_UUID)
+                        if data and len(data) >= 1:
+                            self._under_voltage = bool(data[0])
+                    except (BleakError, TimeoutError, AttributeError) as err:
+                        _LOGGER.debug("Under-voltage not available on %s: %s", self._mac, err)
+            except (BleakError, TimeoutError, AttributeError) as err:
+                _LOGGER.debug("Diagnostic refresh failed on %s: %s", self._mac, err)
+                return
+        self._notify_listeners()
+
+    async def read_manufacturer_name(self) -> str | None:
+        """Read the device manufacturer name."""
+        try:
+            data = await self._ble_read(MANUFACTURER_NAME_UUID)
+            if data:
+                name = data.decode("ascii", errors="replace").strip()
+                self._manufacturer_name = name
+                self._notify_listeners()
+                return name
+        except (BleakError, TimeoutError, AttributeError) as err:
+            _LOGGER.warning("Failed to read manufacturer name from %s: %s", self._mac, err)
+        return None
+
+    async def read_hardware_revision(self) -> str | None:
+        """Read the device hardware revision."""
+        try:
+            data = await self._ble_read(HARDWARE_REVISION_UUID)
+            if data:
+                rev = data.decode("ascii", errors="replace").strip()
+                self._hardware_revision = rev
+                self._notify_listeners()
+                return rev
+        except (BleakError, TimeoutError, AttributeError) as err:
+            _LOGGER.warning("Failed to read hardware revision from %s: %s", self._mac, err)
+        return None
+
+    async def read_software_revision(self) -> str | None:
+        """Read the device software revision."""
+        try:
+            data = await self._ble_read(SOFTWARE_REVISION_UUID)
+            if data:
+                rev = data.decode("ascii", errors="replace").strip()
+                self._software_revision = rev
+                self._notify_listeners()
+                return rev
+        except (BleakError, TimeoutError, AttributeError) as err:
+            _LOGGER.warning("Failed to read software revision from %s: %s", self._mac, err)
+        return None
