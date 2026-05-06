@@ -30,17 +30,21 @@ from .const import (
     CMD_DOWN,
     CMD_STOP,
     CMD_UP,
+    CONFIG_ITEM_LOCAL_TIME_OFFSET,
+    CONFIG_QUERY_PREFIX,
     CONNECT_TIMEOUT,
     DOMAIN,
     LOCAL_TIME_CHAR_UUID,
     MANUFACTURER_ID,
     MOTOR_CONTROL_UUID,
     MOTOR_TARGET_STATE_UUID,
+    RESPONSE_TIMEOUT,
+    SHADE_CONFIG_CHAR_UUID,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["cover", "sensor", "datetime"]
+PLATFORMS = ["cover", "sensor", "datetime", "number"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -98,6 +102,7 @@ class SomaBlindDevice:
         self._position: int | None = None
         self._battery: int | None = None
         self._device_time: dt | None = None
+        self._local_time_offset_hours: int | None = None
         self._last_seen: float | None = None
         self._lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
@@ -137,6 +142,11 @@ class SomaBlindDevice:
     def device_time(self) -> dt | None:
         """Cached device local time."""
         return self._device_time
+
+    @property
+    def local_time_offset_hours(self) -> int | None:
+        """Cached timezone offset in hours (e.g. -5 for UTC-5)."""
+        return self._local_time_offset_hours
 
     # --- Listener management ---
 
@@ -281,4 +291,68 @@ class SomaBlindDevice:
         epoch = int(target.timestamp())
         await self._ble_write(LOCAL_TIME_CHAR_UUID, struct.pack("<I", epoch))
         self._device_time = target
+        self._notify_listeners()
+
+    # --- Shade Config (LocalTimeOffset) ---
+
+    async def _ble_notify_command(
+        self, char_uuid: str, write_data: bytes, timeout: int = RESPONSE_TIMEOUT
+    ) -> bytearray | None:
+        """Write to a characteristic and wait for a notification response."""
+        response_data: bytearray | None = None
+        event = asyncio.Event()
+
+        def _handler(_sender: int, data: bytearray) -> None:
+            nonlocal response_data
+            response_data = data
+            event.set()
+
+        async with self._lock:
+            try:
+                async with BleakClient(self._mac, timeout=CONNECT_TIMEOUT) as client:
+                    await client.start_notify(char_uuid, _handler)
+                    await client.write_gatt_char(char_uuid, write_data, response=True)
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        _LOGGER.warning(
+                            "No notification response from %s on %s", self._mac, char_uuid
+                        )
+                    finally:
+                        await client.stop_notify(char_uuid)
+            except (BleakError, TimeoutError, AttributeError) as err:
+                _LOGGER.warning("BLE notify error on %s: %s", self._mac, err)
+                raise
+
+        return response_data
+
+    async def read_local_time_offset(self) -> int | None:
+        """Read the local time offset from Shade Config.
+
+        Config item 0x06 stores an int8 where minutes = int8 * -60.
+        Returns the offset in hours (e.g. -5 for UTC-5).
+        """
+        query = bytes([CONFIG_QUERY_PREFIX, 0x01, CONFIG_ITEM_LOCAL_TIME_OFFSET])
+        response = await self._ble_notify_command(SHADE_CONFIG_CHAR_UUID, query)
+        if response is None or len(response) < 3:
+            return None
+        if response[0] != CONFIG_ITEM_LOCAL_TIME_OFFSET:
+            return None
+        int8_val = response[2]
+        # Clamp to signed int8 range
+        if int8_val > 127:
+            int8_val -= 256
+        self._local_time_offset_hours = -int8_val
+        self._notify_listeners()
+        return self._local_time_offset_hours
+
+    async def set_local_time_offset(self, offset_hours: int) -> None:
+        """Set the local time offset via Shade Config.
+
+        Converts hours to the device int8 format where int8 = -offset_hours.
+        """
+        int8_val = (-offset_hours) & 0xFF
+        data = bytes([CONFIG_ITEM_LOCAL_TIME_OFFSET, 0x01, int8_val])
+        await self._ble_write(SHADE_CONFIG_CHAR_UUID, data)
+        self._local_time_offset_hours = offset_hours
         self._notify_listeners()

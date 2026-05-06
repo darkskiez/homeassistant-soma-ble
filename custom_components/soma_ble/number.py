@@ -1,16 +1,15 @@
-"""Datetime platform for SOMA BLE blinds.
+"""Number platform for SOMA BLE blinds.
 
-Reads and sets the device's internal clock via the Time Service.
+Reads and sets the device's timezone offset via the Shade Config service.
 """
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime
 from typing import Any
 
-from homeassistant.components.datetime import DateTimeEntity
+from homeassistant.components.number import NumberEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
@@ -18,34 +17,35 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, MANUFACTURER, MODEL
 
-_LOGGER = logging.getLogger(__name__)
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the SOMA BLE datetime entity."""
+    """Set up the SOMA BLE timezone offset number entity."""
     device = hass.data[DOMAIN][entry.entry_id]["device"]
-    entity = SomaBleDateTime(device, entry.entry_id)
+    entity = SomaBleTimeOffset(device, entry.entry_id)
     async_add_entities([entity], False)
-    # Read the current device time in the background.
     hass.async_create_task(entity._initial_read())
 
 
-class SomaBleDateTime(DateTimeEntity):
-    """SOMA blind device clock."""
+class SomaBleTimeOffset(NumberEntity):
+    """SOMA blind timezone offset."""
 
     _attr_has_entity_name = True
-    _attr_name = "Device clock"
+    _attr_name = "Timezone offset"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_should_poll = False
+    _attr_native_min_value = -12.0
+    _attr_native_max_value = 14.0
+    _attr_native_step = 1.0
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
 
     def __init__(self, device: Any, entry_id: str) -> None:
-        """Initialize the datetime entity."""
+        """Initialize the number entity."""
         self._device = device
-        self._attr_unique_id = f"{entry_id}_datetime"
+        self._attr_unique_id = f"{entry_id}_time_offset"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.unique_id)},
             name=device.name,
@@ -55,9 +55,12 @@ class SomaBleDateTime(DateTimeEntity):
         )
 
     @property
-    def native_value(self) -> datetime | None:
-        """Return the cached device time."""
-        return self._device.device_time
+    def native_value(self) -> float | None:
+        """Return the cached timezone offset."""
+        offset = self._device.local_time_offset_hours
+        if offset is not None:
+            return float(offset)
+        return None
 
     @property
     def available(self) -> bool:
@@ -77,17 +80,17 @@ class SomaBleDateTime(DateTimeEntity):
 
     @callback
     def _state_update(self) -> None:
-        """Called when device pushes a new value (e.g. after set_time)."""
+        """Called when device pushes a new value."""
         self.async_write_ha_state()
 
     async def _initial_read(self) -> None:
-        """Background read of the device clock at startup."""
-        dt = await self._device.read_time()
-        if dt is not None:
+        """Background read of the timezone offset at startup."""
+        offset = await self._device.read_local_time_offset()
+        if offset is not None:
             self.async_write_ha_state()
 
     # --- Command ---
 
-    async def async_set_value(self, value: datetime) -> None:
-        """Set the device clock."""
-        await self._device.set_time(value)
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the timezone offset."""
+        await self._device.set_local_time_offset(int(value))
