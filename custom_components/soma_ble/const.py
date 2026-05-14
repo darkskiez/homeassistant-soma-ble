@@ -46,6 +46,37 @@ CMD_DOWN = bytes([0x96])
 # Shade Config TLV item IDs
 CONFIG_ITEM_MOTOR_SPEED = 0x01
 CONFIG_ITEM_LOCAL_TIME_OFFSET = 0x06
+CONFIG_ITEM_BOOT_SEQ = 0x0C
+CONFIG_ITEM_SUNRISE_SUNSET = 0x17
+
+# All shade config items mapped by ID → display info for diagnostic entities.
+# Items with _device_class or _unit set are known-format values; others display as raw hex.
+SHADE_CONFIG_DIAG_ITEMS: dict[int, tuple[str, str | None, str | None]] = {
+    0x01: ("Motor speed", None, None),           # uint8, already a config Number
+    0x02: ("Motor direction", None, None),
+    0x03: ("Motor speed trigger", None, None),
+    0x04: ("PID", None, None),
+    0x05: ("Geo position", None, None),
+    0x06: ("Local time offset", None, None),     # already a config Number
+    0x07: ("Motor acceleration", None, None),
+    0x08: ("Motor deceleration", None, None),
+    0x09: ("Stall acceleration", None, None),
+    0x0A: ("Encoder increment x2", None, None),
+    0x0B: ("Encoder increment x4", None, None),
+    0x0C: ("Boot sequence", None, None),         # uint32 LE
+    0x0D: ("Reset reason", None, None),
+    0x0E: ("Stop reason", None, None),
+    0x0F: ("Power-off count", None, None),
+    0x10: ("Slip length", None, None),
+    0x11: ("Encoder max", None, None),
+    0x12: ("Encoder current", None, None),
+    0x13: ("Slip interval", None, None),
+    0x14: ("Position moves total", None, None),
+    0x15: ("Motor moves total", None, None),
+    0x16: ("In calibration mode", None, None),
+    0x17: ("Sunrise/sunset", None, None),        # two uint32 LE timestamps
+    0x18: ("Motor current", None, None),
+}
 
 # Shade Config query prefix byte
 CONFIG_QUERY_PREFIX = 0xFF

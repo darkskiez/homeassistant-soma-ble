@@ -15,8 +15,10 @@ from typing import Any, Callable
 
 from bleak import BleakClient
 from bleak.exc import BleakError
+from bleak_retry_connector import establish_connection
 
 from homeassistant.components.bluetooth import (
+    async_ble_device_from_address,
     async_register_callback,
     BluetoothChange,
     BluetoothScanningMode,
@@ -45,6 +47,7 @@ from .const import (
     MOTOR_UNDER_VOLTAGE_UUID,
     RESPONSE_TIMEOUT,
     SHADE_CONFIG_CHAR_UUID,
+    SHADE_CONFIG_DIAG_ITEMS,
     SOFTWARE_REVISION_UUID,
 )
 
@@ -62,6 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     name = entry.data.get("name")
 
     device = SomaBlindDevice(mac, name)
+    device._hass = hass
 
     @callback
     def _advertisement_callback(
@@ -114,12 +118,14 @@ class SomaBlindDevice:
         self._device_time: dt | None = None
         self._local_time_offset_hours: int | None = None
         self._motor_speed: int | None = None
+        self._shade_config_data: dict[int, int | bytes] = {}
         self._solar_voltage: int | None = None
         self._under_voltage: bool | None = None
         self._manufacturer_name: str | None = None
         self._hardware_revision: str | None = None
         self._software_revision: str | None = None
         self._last_seen: float | None = None
+        self._hass: HomeAssistant | None = None
         self._lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
 
@@ -168,6 +174,11 @@ class SomaBlindDevice:
     def motor_speed(self) -> int | None:
         """Cached motor speed setting (0–255)."""
         return self._motor_speed
+
+    @property
+    def shade_config_data(self) -> dict[int, int | bytes]:
+        """Cached shade config values (item_id → parsed value)."""
+        return self._shade_config_data
 
     @property
     def solar_voltage(self) -> int | None:
@@ -256,11 +267,17 @@ class SomaBlindDevice:
                     pass
 
         _LOGGER.debug(
-            "Adv %s: pos=%s bat=%s%s",
+            "Adv %s: proto=%s raw=%s venetian=%s bat=%s "
+            "raw_pos=%s raw_target=%s pos=%s name=%s",
             self._mac[-5:],
+            data[0],
+            data.hex(),
+            venetian,
+            bat,
+            raw_pos,
+            raw_target,
             self._position,
-            self._battery,
-            " (venetian)" if venetian else "",
+            self._name,
         )
 
         self._notify_listeners()
@@ -271,7 +288,13 @@ class SomaBlindDevice:
         """Connect and write to a BLE characteristic."""
         async with self._lock:
             try:
-                async with BleakClient(self._mac, timeout=CONNECT_TIMEOUT) as client:
+                ble_device = async_ble_device_from_address(
+                    self._hass, self._mac, connectable=True
+                )
+                client = await establish_connection(
+                    BleakClient, ble_device, self._mac, timeout=CONNECT_TIMEOUT
+                )
+                async with client:
                     await client.write_gatt_char(char_uuid, data, response=True)
             except (BleakError, TimeoutError, AttributeError) as err:
                 _LOGGER.warning("BLE write error on %s: %s", self._mac, err)
@@ -281,7 +304,13 @@ class SomaBlindDevice:
         """Connect and read a BLE characteristic."""
         async with self._lock:
             try:
-                async with BleakClient(self._mac, timeout=CONNECT_TIMEOUT) as client:
+                ble_device = async_ble_device_from_address(
+                    self._hass, self._mac, connectable=True
+                )
+                client = await establish_connection(
+                    BleakClient, ble_device, self._mac, timeout=CONNECT_TIMEOUT
+                )
+                async with client:
                     return await client.read_gatt_char(char_uuid)
             except (BleakError, TimeoutError, AttributeError) as err:
                 _LOGGER.warning("BLE read error on %s: %s", self._mac, err)
@@ -352,7 +381,13 @@ class SomaBlindDevice:
 
         async with self._lock:
             try:
-                async with BleakClient(self._mac, timeout=CONNECT_TIMEOUT) as client:
+                ble_device = async_ble_device_from_address(
+                    self._hass, self._mac, connectable=True
+                )
+                client = await establish_connection(
+                    BleakClient, ble_device, self._mac, timeout=CONNECT_TIMEOUT
+                )
+                async with client:
                     await client.start_notify(char_uuid, _handler)
                     await client.write_gatt_char(char_uuid, write_data, response=True)
                     try:
@@ -421,6 +456,48 @@ class SomaBlindDevice:
         self._motor_speed = speed
         self._notify_listeners()
 
+    # --- Shade Config (batch diagnostic read) ---
+
+    async def _query_single_config(
+        self, client: BleakClient, query: bytes
+    ) -> int | bytes | None:
+        """Query a single config item via an already-connected client.
+
+        Starts notify, writes the query, waits for one notification,
+        then stops notify. Returns the parsed value.
+        """
+        response: bytearray | None = None
+        event = asyncio.Event()
+
+        def _handler(_sender: int, data: bytearray) -> None:
+            nonlocal response
+            response = data
+            event.set()
+
+        await client.start_notify(SHADE_CONFIG_CHAR_UUID, _handler)
+        try:
+            await client.write_gatt_char(SHADE_CONFIG_CHAR_UUID, query, response=True)
+            await asyncio.wait_for(event.wait(), timeout=RESPONSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            await client.stop_notify(SHADE_CONFIG_CHAR_UUID)
+
+        if response is None or len(response) < 3:
+            return None
+
+        item_id = response[0]
+        length = response[1]
+        raw = response[2 : 2 + length]
+        if length == 1:
+            return raw[0]
+        elif length == 2:
+            return struct.unpack("<H", raw)[0]
+        elif length == 4:
+            return struct.unpack("<I", raw)[0]
+        else:
+            return bytes(raw)
+
     # --- Diagnostics (periodic polling) ---
 
     def start_polling(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -434,7 +511,9 @@ class SomaBlindDevice:
                 except asyncio.TimeoutError:
                     await self._refresh_diagnostics()
 
-        task = hass.async_create_task(_poll_loop())
+        task = hass.async_create_background_task(
+            _poll_loop(), name=f"soma_ble_poll_{self._mac}"
+        )
 
         def _stop() -> None:
             stop_event.set()
@@ -443,10 +522,17 @@ class SomaBlindDevice:
         entry.async_on_unload(_stop)
 
     async def _refresh_diagnostics(self) -> None:
-        """Read solar voltage and under-voltage in a single BLE session."""
+        """Read voltage diagnostics and shade configs in a single BLE session."""
         async with self._lock:
             try:
-                async with BleakClient(self._mac, timeout=CONNECT_TIMEOUT) as client:
+                ble_device = async_ble_device_from_address(
+                    self._hass, self._mac, connectable=True
+                )
+                client = await establish_connection(
+                    BleakClient, ble_device, self._mac, timeout=CONNECT_TIMEOUT
+                )
+                async with client:
+                    self._last_seen = time.monotonic()
                     try:
                         data = await client.read_gatt_char(MOTOR_SOLAR_PANEL_VOLTAGE_UUID)
                         if data and len(data) >= 2:
@@ -459,10 +545,31 @@ class SomaBlindDevice:
                             self._under_voltage = bool(data[0])
                     except (BleakError, TimeoutError, AttributeError) as err:
                         _LOGGER.debug("Under-voltage not available on %s: %s", self._mac, err)
+                    # One-shot: read shade configs once we can reach the device.
+                    if not self._shade_config_data:
+                        await self._read_shade_configs_via_client(client)
             except (BleakError, TimeoutError, AttributeError) as err:
                 _LOGGER.debug("Diagnostic refresh failed on %s: %s", self._mac, err)
                 return
         self._notify_listeners()
+
+    async def _read_shade_configs_via_client(self, client: BleakClient) -> None:
+        """Read all shade config items sequentially via an active client."""
+        item_ids = sorted(SHADE_CONFIG_DIAG_ITEMS)
+        data: dict[int, int | bytes] = {}
+        for item_id in item_ids:
+            try:
+                query = bytes([CONFIG_QUERY_PREFIX, 0x01, item_id])
+                val = await self._query_single_config(client, query)
+                if val is not None:
+                    data[item_id] = val
+            except (BleakError, TimeoutError, AttributeError) as err:
+                _LOGGER.debug(
+                    "Config item 0x%02x not available on %s: %s",
+                    item_id, self._mac, err,
+                )
+        if data:
+            self._shade_config_data = data
 
     async def read_manufacturer_name(self) -> str | None:
         """Read the device manufacturer name."""

@@ -17,7 +17,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, MODEL
+from .const import DOMAIN, MANUFACTURER, MODEL, SHADE_CONFIG_DIAG_ITEMS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,10 +37,19 @@ async def async_setup_entry(
         SomaBleHardwareRevisionSensor(device, entry.entry_id),
         SomaBleSoftwareRevisionSensor(device, entry.entry_id),
     ]
+    # Shade config diagnostic sensors (skip 0x01 motorSpeed and 0x06 time offset,
+    # which are already config Number entities).
+    for item_id, (name, _dc, _unit) in SHADE_CONFIG_DIAG_ITEMS.items():
+        if item_id in (0x01, 0x06):
+            continue
+        sensors.append(SomaBleShadeConfigSensor(device, entry.entry_id, item_id, name))
+
     async_add_entities(sensors, False)
-    # One-time reads for static info (manufacturer, hw/sw rev).
-    # Dynamic values (voltage, under-voltage) are handled by the polling loop.
-    for s in sensors[3:]:
+
+    # Background reads for static info (manufacturer, hw/sw rev).
+    # Dynamic values (voltage, under-voltage) and shade configs are
+    # handled by the device polling loop.
+    for s in sensors[3:6]:  # manufacturer, hw rev, sw rev
         hass.async_create_task(s._initial_read())
 
 
@@ -239,3 +248,25 @@ class SomaBleSoftwareRevisionSensor(_DiagnosticSensor):
         val = await self._device.read_software_revision()
         if val is not None:
             self.async_write_ha_state()
+
+
+# --- Shade Config Diagnostics ---
+
+
+class SomaBleShadeConfigSensor(_DiagnosticSensor):
+    """Read-only sensor for a shade config item."""
+
+    def __init__(self, device: Any, entry_id: str, item_id: int, name: str) -> None:
+        super().__init__(device, entry_id, f"config_{item_id:02x}")
+        self._item_id = item_id
+        self._attr_name = name
+
+    @property
+    def native_value(self) -> str | int | None:
+        data = self._device.shade_config_data
+        val = data.get(self._item_id)
+        if val is None:
+            return None
+        if isinstance(val, bytes):
+            return val.hex()
+        return val
