@@ -20,6 +20,12 @@ No cloud, no SOMA Connect hub required — just a Bluetooth adapter on your HA i
 
 ## Installation
 
+### HACS (custom repository)
+
+1. Go to **HACS → Integrations → Custom repositories**
+2. Add `https://github.com/darkskiez/homeassistant-soma-ble` with category **Integration**
+3. Click **Install** on the SOMA BLE Blinds card
+
 ### Manual
 
 Copy the `custom_components/soma_ble/` directory into your Home Assistant `config/custom_components/` directory.
