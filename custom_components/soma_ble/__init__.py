@@ -36,6 +36,8 @@ from .const import (
     CONFIG_ITEM_MOTOR_SPEED,
     CONFIG_QUERY_PREFIX,
     CONNECT_TIMEOUT,
+    DIRECTION_DOWN,
+    DIRECTION_UP,
     DOMAIN,
     HARDWARE_REVISION_UUID,
     LOCAL_TIME_CHAR_UUID,
@@ -53,7 +55,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["cover", "sensor", "datetime", "number"]
+PLATFORMS = ["cover", "sensor", "datetime", "number", "select"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -125,6 +127,8 @@ class SomaBlindDevice:
         self._hardware_revision: str | None = None
         self._software_revision: str | None = None
         self._last_seen: float | None = None
+        self._venetian: bool = False
+        self._direction: str = DIRECTION_UP
         self._hass: HomeAssistant | None = None
         self._lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
@@ -155,6 +159,23 @@ class SomaBlindDevice:
         if self._last_seen is None:
             return False
         return (time.monotonic() - self._last_seen) < AVAILABILITY_TIMEOUT
+
+    @property
+    def venetian(self) -> bool:
+        """True if the blind is in venetian (tilt) mode."""
+        return self._venetian
+
+    @property
+    def direction(self) -> str:
+        """Current tilt direction: 'up' or 'down'."""
+        return self._direction
+
+    def set_direction(self, direction: str) -> None:
+        """Set the tilt direction for venetian blinds."""
+        if direction not in (DIRECTION_UP, DIRECTION_DOWN):
+            return
+        self._direction = direction
+        self._notify_listeners()
 
     @property
     def unique_id(self) -> str:
@@ -247,9 +268,10 @@ class SomaBlindDevice:
         if venetian:
             raw_pos = raw_pos * 2 - 100
             raw_target = raw_target * 2 - 100
-
-        # SOMA: 0 = open, 100 = closed → HA: 0 = closed, 100 = open
-        self._position = max(0, min(100, 100 - raw_pos))
+            self._position = max(0, min(100, abs(raw_pos)))
+        else:
+            self._position = max(0, min(100, 100 - raw_pos))
+        self._venetian = venetian
         self._battery = min(100, bat)
         self._last_seen = time.monotonic()
 
@@ -318,12 +340,18 @@ class SomaBlindDevice:
 
     async def open(self) -> None:
         """Open the blind fully."""
+        if self._venetian:
+            await self.set_position(0)
+            return
         await self._ble_write(MOTOR_CONTROL_UUID, CMD_UP)
         self._position = 100
         self._notify_listeners()
 
     async def close(self) -> None:
         """Close the blind fully."""
+        if self._venetian:
+            await self.set_position(100)
+            return
         await self._ble_write(MOTOR_CONTROL_UUID, CMD_DOWN)
         self._position = 0
         self._notify_listeners()
@@ -335,8 +363,11 @@ class SomaBlindDevice:
     async def set_position(self, position: int) -> None:
         """Move the blind to a position (HA: 0 = closed, 100 = open)."""
         position = max(0, min(100, position))
-        # Invert for SOMA protocol (0 = open, 100 = closed)
-        cmd_pos = 100 - position
+        if self._venetian:
+            raw_pos = position if self._direction == DIRECTION_UP else -position
+            cmd_pos = (raw_pos + 100) // 2
+        else:
+            cmd_pos = 100 - position
         await self._ble_write(MOTOR_TARGET_STATE_UUID, bytes([cmd_pos]))
         self._position = position
         self._notify_listeners()

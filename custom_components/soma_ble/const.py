@@ -88,6 +88,11 @@ RESPONSE_TIMEOUT = 5
 # Availability: mark offline if no advertisement received in this window
 AVAILABILITY_TIMEOUT = 900  # 15 minutes
 
+# Tilt direction options for venetian blinds
+DIRECTION_UP = "up"
+DIRECTION_DOWN = "down"
+DIRECTION_OPTIONS = [DIRECTION_UP, DIRECTION_DOWN]
+
 # Manufacturer info
 MANUFACTURER = "SOMA"
 MODEL = "Smart Shade/Tilt"
