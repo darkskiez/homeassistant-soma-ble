@@ -13,6 +13,8 @@ import time
 from datetime import datetime as dt, timezone
 from typing import Any, Callable
 
+import voluptuous as vol
+
 from bleak import BleakClient
 from bleak.exc import BleakError
 from bleak_retry_connector import establish_connection
@@ -34,6 +36,7 @@ from .const import (
     CMD_UP,
     CONFIG_ITEM_LOCAL_TIME_OFFSET,
     CONFIG_ITEM_MOTOR_SPEED,
+    CONFIG_ITEM_SUNRISE_SUNSET,
     CONFIG_QUERY_PREFIX,
     CONNECT_TIMEOUT,
     DIRECTION_DOWN,
@@ -51,6 +54,8 @@ from .const import (
     SHADE_CONFIG_CHAR_UUID,
     SHADE_CONFIG_DIAG_ITEMS,
     SOFTWARE_REVISION_UUID,
+    SUNRISE_DIAG_ID,
+    SUNSET_DIAG_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -93,6 +98,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         "device": device,
     }
+
+    # Register domain-level service to force a shade config re-read.
+    if not hass.services.has_service(DOMAIN, "refresh_shade_config"):
+        refresh_schema = vol.Schema({vol.Required("entry_id"): str})
+
+        async def _handle_refresh_shade_config(call: Any) -> None:
+            dev = hass.data[DOMAIN][call.data["entry_id"]]["device"]
+            await dev.force_refresh_shade_config()
+
+        hass.services.async_register(
+            DOMAIN,
+            "refresh_shade_config",
+            _handle_refresh_shade_config,
+            schema=refresh_schema,
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -536,6 +556,8 @@ class SomaBlindDevice:
         stop_event = asyncio.Event()
 
         async def _poll_loop() -> None:
+            # Run first refresh immediately, then loop every 300 s.
+            await self._refresh_diagnostics()
             while not stop_event.is_set():
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=300)
@@ -589,6 +611,9 @@ class SomaBlindDevice:
         item_ids = sorted(SHADE_CONFIG_DIAG_ITEMS)
         data: dict[int, int | bytes] = {}
         for item_id in item_ids:
+            # Skip virtual diagnostic items (derived from multi-value responses)
+            if item_id >= 0x70:
+                continue
             try:
                 query = bytes([CONFIG_QUERY_PREFIX, 0x01, item_id])
                 val = await self._query_single_config(client, query)
@@ -599,8 +624,52 @@ class SomaBlindDevice:
                     "Config item 0x%02x not available on %s: %s",
                     item_id, self._mac, err,
                 )
+        # Decode sunrise/sunset from 8-byte raw response (two uint32 LE epochs)
+        raw_ss = data.get(CONFIG_ITEM_SUNRISE_SUNSET)
+        _LOGGER.debug(
+            "Shade config 0x17 raw %s len=%s hex=%s",
+            "None" if raw_ss is None else type(raw_ss).__name__,
+            len(raw_ss) if isinstance(raw_ss, (bytes, bytearray)) else "N/A",
+            raw_ss.hex() if isinstance(raw_ss, (bytes, bytearray)) else "N/A",
+        )
+        if isinstance(raw_ss, (bytes, bytearray)):
+            # The notification response may include the [item_id][length] TLV
+            # header. Strip it so we have just the 8 raw data bytes.
+            if len(raw_ss) >= 10 and raw_ss[0] == CONFIG_ITEM_SUNRISE_SUNSET:
+                raw_ss = raw_ss[2:]
+            if len(raw_ss) >= 8:
+                sunrise = struct.unpack("<I", raw_ss[0:4])[0]
+                sunset = struct.unpack("<I", raw_ss[4:8])[0]
+                _LOGGER.debug("Sunrise epoch=%s Sunset epoch=%s", sunrise, sunset)
+                data[SUNRISE_DIAG_ID] = sunrise
+                data[SUNSET_DIAG_ID] = sunset
         if data:
+            _LOGGER.debug("Shade config read %d items", len(data))
             self._shade_config_data = data
+
+    async def force_refresh_shade_config(self) -> None:
+        """Force a BLE session to re-read all shade config items.
+
+        Bypasses the one-shot guard so that newly added items (e.g. virtual
+        sensors) are populated even when the initial read already succeeded.
+        Used by the soma_ble.refresh_shade_config service.
+        """
+        async with self._lock:
+            try:
+                ble_device = async_ble_device_from_address(
+                    self._hass, self._mac, connectable=True
+                )
+                client = await establish_connection(
+                    BleakClient, ble_device, self._mac, timeout=CONNECT_TIMEOUT
+                )
+                async with client:
+                    await self._read_shade_configs_via_client(client)
+            except (BleakError, TimeoutError, AttributeError) as err:
+                _LOGGER.warning(
+                    "Force shade config refresh failed on %s: %s", self._mac, err
+                )
+                return
+        self._notify_listeners()
 
     async def read_manufacturer_name(self) -> str | None:
         """Read the device manufacturer name."""

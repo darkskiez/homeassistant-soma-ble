@@ -49,6 +49,11 @@ CONFIG_ITEM_LOCAL_TIME_OFFSET = 0x06
 CONFIG_ITEM_BOOT_SEQ = 0x0C
 CONFIG_ITEM_SUNRISE_SUNSET = 0x17
 
+# Virtual diagnostic item IDs (not real shade config items; derived by the
+# integration from raw multi-value responses, e.g. sunrise/sunset).
+SUNRISE_DIAG_ID = 0x71
+SUNSET_DIAG_ID = 0x72
+
 # All shade config items mapped by ID → display info for diagnostic entities.
 # Items with _device_class or _unit set are known-format values; others display as raw hex.
 SHADE_CONFIG_DIAG_ITEMS: dict[int, tuple[str, str | None, str | None]] = {
@@ -74,7 +79,9 @@ SHADE_CONFIG_DIAG_ITEMS: dict[int, tuple[str, str | None, str | None]] = {
     0x14: ("Position moves total", None, None),
     0x15: ("Motor moves total", None, None),
     0x16: ("In calibration mode", None, None),
-    0x17: ("Sunrise/sunset", None, None),        # two uint32 LE timestamps
+    0x17: ("Sunrise/sunset", None, None),        # two uint32 LE timestamps → decoded
+    SUNRISE_DIAG_ID: ("Sunrise", "timestamp", None),
+    SUNSET_DIAG_ID: ("Sunset", "timestamp", None),
     0x18: ("Motor current", None, None),
 }
 

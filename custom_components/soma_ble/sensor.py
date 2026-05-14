@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorStateClass,
-)
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant, callback
@@ -38,11 +35,15 @@ async def async_setup_entry(
         SomaBleSoftwareRevisionSensor(device, entry.entry_id),
     ]
     # Shade config diagnostic sensors (skip 0x01 motorSpeed and 0x06 time offset,
-    # which are already config Number entities).
+    # which are already config Number entities; also skip 0x17 raw sunrise/sunset
+    # which is decoded into separate virtual sensors).
     for item_id, (name, _dc, _unit) in SHADE_CONFIG_DIAG_ITEMS.items():
-        if item_id in (0x01, 0x06):
+        if item_id in (0x01, 0x06, 0x17):
             continue
-        sensors.append(SomaBleShadeConfigSensor(device, entry.entry_id, item_id, name))
+        if item_id >= 0x70:
+            sensors.append(SomaBleTimestampSensor(device, entry.entry_id, item_id, name))
+        else:
+            sensors.append(SomaBleShadeConfigSensor(device, entry.entry_id, item_id, name))
 
     async_add_entities(sensors, False)
 
@@ -270,3 +271,22 @@ class SomaBleShadeConfigSensor(_DiagnosticSensor):
         if isinstance(val, bytes):
             return val.hex()
         return val
+
+
+class SomaBleTimestampSensor(_DiagnosticSensor):
+    """Read-only sensor for a decoded uint32 epoch value."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_state_class = None
+
+    def __init__(self, device: Any, entry_id: str, item_id: int, name: str) -> None:
+        super().__init__(device, entry_id, f"config_{item_id:02x}")
+        self._item_id = item_id
+        self._attr_name = name
+
+    @property
+    def native_value(self) -> datetime | None:
+        val = self._device.shade_config_data.get(self._item_id)
+        if isinstance(val, int) and val > 0:
+            return datetime.fromtimestamp(val, tz=timezone.utc)
+        return None
