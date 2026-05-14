@@ -31,6 +31,8 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import (
     AVAILABILITY_TIMEOUT,
+    CALIBRATION_VENETIAN_OFF,
+    CALIBRATION_VENETIAN_ON,
     CMD_DOWN,
     CMD_STOP,
     CMD_UP,
@@ -39,13 +41,12 @@ from .const import (
     CONFIG_ITEM_SUNRISE_SUNSET,
     CONFIG_QUERY_PREFIX,
     CONNECT_TIMEOUT,
-    DIRECTION_DOWN,
-    DIRECTION_UP,
     DOMAIN,
     HARDWARE_REVISION_UUID,
     LOCAL_TIME_CHAR_UUID,
     MANUFACTURER_ID,
     MANUFACTURER_NAME_UUID,
+    MOTOR_CALIBRATION_UUID,
     MOTOR_CONTROL_UUID,
     MOTOR_SOLAR_PANEL_VOLTAGE_UUID,
     MOTOR_TARGET_STATE_UUID,
@@ -56,6 +57,12 @@ from .const import (
     SOFTWARE_REVISION_UUID,
     SUNRISE_DIAG_ID,
     SUNSET_DIAG_ID,
+    TILT_DOWN,
+    TILT_DIRECTION_OPTIONS,
+    TILT_UP,
+    VENETIAN_MODE_OPTIONS,
+    VENETIAN_OFF,
+    VENETIAN_ON,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -143,12 +150,14 @@ class SomaBlindDevice:
         self._shade_config_data: dict[int, int | bytes] = {}
         self._solar_voltage: int | None = None
         self._under_voltage: bool | None = None
+        self._has_solar_voltage = True
+        self._has_under_voltage = True
         self._manufacturer_name: str | None = None
         self._hardware_revision: str | None = None
         self._software_revision: str | None = None
         self._last_seen: float | None = None
         self._venetian: bool = False
-        self._direction: str = DIRECTION_UP
+        self._tilt_direction: str = TILT_UP
         self._hass: HomeAssistant | None = None
         self._lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
@@ -185,17 +194,26 @@ class SomaBlindDevice:
         """True if the blind is in venetian (tilt) mode."""
         return self._venetian
 
-    @property
-    def direction(self) -> str:
-        """Current tilt direction: 'up' or 'down'."""
-        return self._direction
+    async def set_venetian_mode(self, on: bool) -> None:
+        """Enable or disable venetian mode on the device."""
+        data = CALIBRATION_VENETIAN_ON if on else CALIBRATION_VENETIAN_OFF
+        await self._ble_write(MOTOR_CALIBRATION_UUID, data)
+        self._venetian = on
+        if self._position is not None and on:
+            await self.set_position(self._position)
+        self._notify_listeners()
 
-    async def set_direction(self, direction: str) -> None:
+    @property
+    def tilt_direction(self) -> str:
+        """Current tilt direction: 'up' or 'down'."""
+        return self._tilt_direction
+
+    async def set_tilt_direction(self, direction: str) -> None:
         """Set the tilt direction for venetian blinds."""
-        if direction not in (DIRECTION_UP, DIRECTION_DOWN):
+        if direction not in TILT_DIRECTION_OPTIONS:
             return
-        self._direction = direction
-        if self._position is not None:
+        self._tilt_direction = direction
+        if self._position is not None and self._venetian:
             await self.set_position(self._position)
         self._notify_listeners()
 
@@ -387,7 +405,7 @@ class SomaBlindDevice:
         position = max(0, min(100, position))
         if self._venetian:
             raw_abs = 100 - position
-            raw_pos = raw_abs if self._direction == DIRECTION_UP else -raw_abs
+            raw_pos = raw_abs if self._tilt_direction == TILT_UP else -raw_abs
             cmd_pos = (raw_pos + 100) // 2
         else:
             cmd_pos = 100 - position
@@ -601,18 +619,22 @@ class SomaBlindDevice:
                 )
                 async with client:
                     self._last_seen = time.monotonic()
-                    try:
-                        data = await client.read_gatt_char(MOTOR_SOLAR_PANEL_VOLTAGE_UUID)
-                        if data and len(data) >= 2:
-                            self._solar_voltage = struct.unpack("<H", data)[0]
-                    except (BleakError, TimeoutError, AttributeError) as err:
-                        _LOGGER.debug("Solar voltage not available on %s: %s", self._mac, err)
-                    try:
-                        data = await client.read_gatt_char(MOTOR_UNDER_VOLTAGE_UUID)
-                        if data and len(data) >= 1:
-                            self._under_voltage = bool(data[0])
-                    except (BleakError, TimeoutError, AttributeError) as err:
-                        _LOGGER.debug("Under-voltage not available on %s: %s", self._mac, err)
+                    if self._has_solar_voltage:
+                        try:
+                            data = await client.read_gatt_char(MOTOR_SOLAR_PANEL_VOLTAGE_UUID)
+                            if data and len(data) >= 2:
+                                self._solar_voltage = struct.unpack("<H", data)[0]
+                        except (BleakError, TimeoutError, AttributeError) as err:
+                            _LOGGER.debug("Solar voltage not available on %s: %s", self._mac, err)
+                            self._has_solar_voltage = False
+                    if self._has_under_voltage:
+                        try:
+                            data = await client.read_gatt_char(MOTOR_UNDER_VOLTAGE_UUID)
+                            if data and len(data) >= 1:
+                                self._under_voltage = bool(data[0])
+                        except (BleakError, TimeoutError, AttributeError) as err:
+                            _LOGGER.debug("Under-voltage not available on %s: %s", self._mac, err)
+                            self._has_under_voltage = False
                     # One-shot: read shade configs once we can reach the device.
                     if not self._shade_config_data:
                         await self._read_shade_configs_via_client(client)
