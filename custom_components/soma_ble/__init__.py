@@ -60,7 +60,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["cover", "sensor", "datetime", "number", "select"]
+PLATFORMS = ["cover", "sensor", "datetime", "number", "select", "button"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -534,12 +534,24 @@ class SomaBlindDevice:
         finally:
             await client.stop_notify(SHADE_CONFIG_CHAR_UUID)
 
-        if response is None or len(response) < 3:
+        if response is None or len(response) < 4:
             return None
 
-        item_id = response[0]
-        length = response[1]
-        raw = response[2 : 2 + length]
+        # The device responds with a batch-style TLV envelope:
+        #   [0xFF][total_len][item_id][item_len][data...]
+        # Skip the 0xFF command byte and total length.
+        if response[0] == CONFIG_QUERY_PREFIX:
+            item_id = response[2]
+            length = response[3]
+            raw = response[4 : 4 + length]
+        else:
+            item_id = response[0]
+            length = response[1]
+            raw = response[2 : 2 + length]
+        _LOGGER.debug(
+            "_query_single item=0x%02x len=%d raw_hex=%s",
+            item_id, length, raw.hex(),
+        )
         if length == 1:
             return raw[0]
         elif length == 2:
@@ -617,6 +629,11 @@ class SomaBlindDevice:
             try:
                 query = bytes([CONFIG_QUERY_PREFIX, 0x01, item_id])
                 val = await self._query_single_config(client, query)
+                if item_id in (CONFIG_ITEM_MOTOR_SPEED, CONFIG_ITEM_LOCAL_TIME_OFFSET):
+                    _LOGGER.debug(
+                        "Config item 0x%02x val=%s type=%s",
+                        item_id, val, type(val).__name__,
+                    )
                 if val is not None:
                     data[item_id] = val
             except (BleakError, TimeoutError, AttributeError) as err:
@@ -632,17 +649,22 @@ class SomaBlindDevice:
             len(raw_ss) if isinstance(raw_ss, (bytes, bytearray)) else "N/A",
             raw_ss.hex() if isinstance(raw_ss, (bytes, bytearray)) else "N/A",
         )
-        if isinstance(raw_ss, (bytes, bytearray)):
-            # The notification response may include the [item_id][length] TLV
-            # header. Strip it so we have just the 8 raw data bytes.
-            if len(raw_ss) >= 10 and raw_ss[0] == CONFIG_ITEM_SUNRISE_SUNSET:
-                raw_ss = raw_ss[2:]
-            if len(raw_ss) >= 8:
-                sunrise = struct.unpack("<I", raw_ss[0:4])[0]
-                sunset = struct.unpack("<I", raw_ss[4:8])[0]
-                _LOGGER.debug("Sunrise epoch=%s Sunset epoch=%s", sunrise, sunset)
-                data[SUNRISE_DIAG_ID] = sunrise
-                data[SUNSET_DIAG_ID] = sunset
+        if isinstance(raw_ss, (bytes, bytearray)) and len(raw_ss) >= 8:
+            sunrise = struct.unpack("<I", raw_ss[0:4])[0]
+            sunset = struct.unpack("<I", raw_ss[4:8])[0]
+            _LOGGER.debug("Sunrise epoch=%s Sunset epoch=%s", sunrise, sunset)
+            data[SUNRISE_DIAG_ID] = sunrise
+            data[SUNSET_DIAG_ID] = sunset
+        # Populate device-level cached values for Number entities
+        if CONFIG_ITEM_MOTOR_SPEED in data and isinstance(data[CONFIG_ITEM_MOTOR_SPEED], int):
+            self._motor_speed = data[CONFIG_ITEM_MOTOR_SPEED]
+            _LOGGER.debug("Motor speed=%s", self._motor_speed)
+        if CONFIG_ITEM_LOCAL_TIME_OFFSET in data and isinstance(data[CONFIG_ITEM_LOCAL_TIME_OFFSET], int):
+            raw = data[CONFIG_ITEM_LOCAL_TIME_OFFSET]
+            if raw > 127:
+                raw -= 256
+            self._local_time_offset_hours = -raw
+            _LOGGER.debug("Local time offset=%s h", self._local_time_offset_hours)
         if data:
             _LOGGER.debug("Shade config read %d items", len(data))
             self._shade_config_data = data

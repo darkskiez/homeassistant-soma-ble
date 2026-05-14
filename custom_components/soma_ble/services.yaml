@@ -1,0 +1,11 @@
+refresh_shade_config:
+  name: Refresh shade config
+  description: Connect via BLE and re-read all shade config diagnostic items.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: The config entry ID of the SOMA device to refresh.
+      required: true
+      example: 01JABCDEFGH1234567890ABCDEF01
+      selector:
+        text: {}

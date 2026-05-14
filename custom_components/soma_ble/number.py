@@ -5,6 +5,7 @@ Config entities for device settings: timezone offset and motor speed.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant.components.number import NumberEntity
@@ -16,6 +17,8 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, MANUFACTURER, MODEL
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -96,7 +99,11 @@ class SomaBleTimeOffset(_SomaBleConfigNumber):
         return None
 
     async def _initial_read(self) -> None:
-        offset = await self._device.read_local_time_offset()
+        try:
+            offset = await self._device.read_local_time_offset()
+        except (Exception,) as err:
+            _LOGGER.debug("Initial time offset read failed: %s", err)
+            offset = None
         if offset is not None:
             self.async_write_ha_state()
 
@@ -109,7 +116,7 @@ class SomaBleMotorSpeed(_SomaBleConfigNumber):
 
     _attr_name = "Motor speed"
     _attr_native_min_value = 1.0
-    _attr_native_max_value = 255.0
+    _attr_native_max_value = 100.0
     _attr_native_step = 1.0
 
     def __init__(self, device: Any, entry_id: str) -> None:
@@ -123,7 +130,11 @@ class SomaBleMotorSpeed(_SomaBleConfigNumber):
         return None
 
     async def _initial_read(self) -> None:
-        speed = await self._device.read_motor_speed()
+        try:
+            speed = await self._device.read_motor_speed()
+        except (Exception,) as err:
+            _LOGGER.debug("Initial motor speed read failed: %s", err)
+            speed = None
         if speed is not None:
             self.async_write_ha_state()
 
