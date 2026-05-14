@@ -1,5 +1,6 @@
 {
   "name": "SOMA BLE Blinds",
   "homeassistant": "2026.4.0",
-  "content_in_root": false
+  "content_in_root": false,
+  "domains": ["cover"]
 }
