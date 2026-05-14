@@ -190,11 +190,13 @@ class SomaBlindDevice:
         """Current tilt direction: 'up' or 'down'."""
         return self._direction
 
-    def set_direction(self, direction: str) -> None:
+    async def set_direction(self, direction: str) -> None:
         """Set the tilt direction for venetian blinds."""
         if direction not in (DIRECTION_UP, DIRECTION_DOWN):
             return
         self._direction = direction
+        if self._position is not None:
+            await self.set_position(self._position)
         self._notify_listeners()
 
     @property
@@ -288,7 +290,7 @@ class SomaBlindDevice:
         if venetian:
             raw_pos = raw_pos * 2 - 100
             raw_target = raw_target * 2 - 100
-            self._position = max(0, min(100, abs(raw_pos)))
+            self._position = max(0, min(100, 100 - abs(raw_pos)))
         else:
             self._position = max(0, min(100, 100 - raw_pos))
         self._venetian = venetian
@@ -361,7 +363,7 @@ class SomaBlindDevice:
     async def open(self) -> None:
         """Open the blind fully."""
         if self._venetian:
-            await self.set_position(0)
+            await self.set_position(100)
             return
         await self._ble_write(MOTOR_CONTROL_UUID, CMD_UP)
         self._position = 100
@@ -370,7 +372,7 @@ class SomaBlindDevice:
     async def close(self) -> None:
         """Close the blind fully."""
         if self._venetian:
-            await self.set_position(100)
+            await self.set_position(0)
             return
         await self._ble_write(MOTOR_CONTROL_UUID, CMD_DOWN)
         self._position = 0
@@ -384,7 +386,8 @@ class SomaBlindDevice:
         """Move the blind to a position (HA: 0 = closed, 100 = open)."""
         position = max(0, min(100, position))
         if self._venetian:
-            raw_pos = position if self._direction == DIRECTION_UP else -position
+            raw_abs = 100 - position
+            raw_pos = raw_abs if self._direction == DIRECTION_UP else -raw_abs
             cmd_pos = (raw_pos + 100) // 2
         else:
             cmd_pos = 100 - position

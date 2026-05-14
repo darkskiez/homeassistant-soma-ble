@@ -11,7 +11,6 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -47,7 +46,6 @@ def _device_info(device: Any) -> DeviceInfo:
 class SomaBleDirectionSelect(SelectEntity):
     """Select entity to set the tilt direction for venetian blinds."""
 
-    _attr_entity_category = EntityCategory.CONFIG
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_name = "Tilt direction"
@@ -67,7 +65,7 @@ class SomaBleDirectionSelect(SelectEntity):
         return self._device.direction
 
     async def async_select_option(self, option: str) -> None:
-        self._device.set_direction(option)
+        await self._device.set_direction(option)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
