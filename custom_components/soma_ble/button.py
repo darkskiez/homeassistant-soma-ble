@@ -1,5 +1,6 @@
 """Button platform for SOMA BLE blinds.
 
+Control buttons: step up, step down.
 Diagnostic buttons: refresh shade config.
 """
 
@@ -24,7 +25,11 @@ async def async_setup_entry(
 ) -> None:
     """Set up the SOMA BLE button entities."""
     device = hass.data[DOMAIN][entry.entry_id]["device"]
-    async_add_entities([SomaBleRefreshShadeConfigButton(device, entry.entry_id)])
+    async_add_entities([
+        SomaBleStepUpButton(device, entry.entry_id),
+        SomaBleStepDownButton(device, entry.entry_id),
+        SomaBleRefreshShadeConfigButton(device, entry.entry_id),
+    ])
 
 
 def _device_info(device: Any) -> DeviceInfo:
@@ -35,6 +40,46 @@ def _device_info(device: Any) -> DeviceInfo:
         model=MODEL,
         connections={("mac", device.mac)},
     )
+
+
+class _ControlButton(ButtonEntity):
+    """Base for control buttons."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+
+    def __init__(self, device: Any, entry_id: str, suffix: str) -> None:
+        self._device = device
+        self._attr_unique_id = f"{entry_id}_{suffix}"
+        self._attr_device_info = _device_info(device)
+
+    @property
+    def available(self) -> bool:
+        return self._device.online
+
+
+class SomaBleStepUpButton(_ControlButton):
+    """Button to step the blind up one increment."""
+
+    _attr_name = "Step up"
+
+    def __init__(self, device: Any, entry_id: str) -> None:
+        super().__init__(device, entry_id, "step_up")
+
+    async def async_press(self) -> None:
+        await self._device.step_up()
+
+
+class SomaBleStepDownButton(_ControlButton):
+    """Button to step the blind down one increment."""
+
+    _attr_name = "Step down"
+
+    def __init__(self, device: Any, entry_id: str) -> None:
+        super().__init__(device, entry_id, "step_down")
+
+    async def async_press(self) -> None:
+        await self._device.step_down()
 
 
 class SomaBleRefreshShadeConfigButton(ButtonEntity):

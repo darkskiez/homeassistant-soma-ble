@@ -34,6 +34,8 @@ from .const import (
     CALIBRATION_VENETIAN_OFF,
     CALIBRATION_VENETIAN_ON,
     CMD_DOWN,
+    CMD_STEP_DOWN,
+    CMD_STEP_UP,
     CMD_STOP,
     CMD_UP,
     CONFIG_ITEM_LOCAL_TIME_OFFSET,
@@ -399,6 +401,14 @@ class SomaBlindDevice:
     async def stop(self) -> None:
         """Stop the blind."""
         await self._ble_write(MOTOR_CONTROL_UUID, CMD_STOP)
+
+    async def step_up(self) -> None:
+        """Step the blind up one increment."""
+        await self._ble_write(MOTOR_CONTROL_UUID, CMD_STEP_UP)
+
+    async def step_down(self) -> None:
+        """Step the blind down one increment."""
+        await self._ble_write(MOTOR_CONTROL_UUID, CMD_STEP_DOWN)
 
     async def set_position(self, position: int) -> None:
         """Move the blind to a position (HA: 0 = closed, 100 = open)."""
